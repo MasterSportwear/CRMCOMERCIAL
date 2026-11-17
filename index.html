@@ -643,7 +643,8 @@ async function abrirLead(id, aba) {
     <div class="mh"><div><h1>${novo ? "Novo lead" : esc(l.nome || "Lead sem nome")}</h1>
       ${novo ? "" : `<div class="sub">${l.status === "ganho" ? `<span class="badge won">Venda</span>` : l.status === "perdido" ? `<span class="badge lost">Perdido · ${esc(l.motivo_perda || "sem motivo")}</span>` : `<span class="badge">Aberto</span>`} · chegou em ${dataHora(l.criado_em)}${l.telefone ? ` · <a href="https://wa.me/${esc(l.telefone)}" target="_blank" rel="noopener">Abrir no WhatsApp</a>` : ""}</div>`}</div>
       <button class="x" data-fechar aria-label="Fechar">×</button></div>
-    ${l.meta_ad_id ? `<div class="note" style="background:var(--accent-soft);border-color:#ffd2b0"><b>Veio de anúncio</b> — ${ad ? `${esc(ad.campaign_nome)} › ${esc(ad.adset_nome)} › ${esc(ad.ad_nome)}` : `${esc(l.anuncio_titulo || "")} (ID ${esc(l.meta_ad_id)}; o nome aparece após a próxima sincronização)`}</div>` : ""}
+    ${l.meta_ad_id ? `<div class="note" style="background:var(--accent-soft);border-color:#ffd2b0"><b>Veio de anúncio</b> — ${ad ? `${esc(ad.campaign_nome)} › ${esc(ad.adset_nome)} › ${esc(ad.ad_nome)}` : `${esc(l.anuncio_titulo || "")} (ID ${esc(l.meta_ad_id)}; o nome aparece após a próxima sincronização)`}${l.codigo_origem ? ` · código <b>${esc(l.codigo_origem)}</b>` : ""}</div>`
+      : l.codigo_origem ? `<div class="note">Chegou com o código <b>${esc(l.codigo_origem)}</b>, que ainda não está cadastrado em Configurações → Códigos de anúncio.</div>` : ""}
     <div class="row"><div class="field"><label>Nome</label><input id="m_nome" value="${esc(l.nome)}"></div>
       <div class="field"><label>WhatsApp (com DDD)</label><input id="m_tel" value="${esc(l.telefone)}" inputmode="tel"></div></div>
     <div class="row"><div class="field"><label>Etapa</label>${sel("m_etapa", etapas.filter((e) => e.id !== 7 || l.status === "ganho").map((e) => [e.id, e.nome]), l.etapa_id)}</div>
@@ -741,12 +742,24 @@ function abrirPerda(l) {
 
 /* ====================== CONFIGURAÇÕES ====================== */
 async function vConfig() {
-  const [cfgRows, seg, eventos] = await Promise.all([q(sb.from("config").select("*")), q(sb.rpc("crm_segredos_definidos")), q(sb.from("webhook_eventos").select("id,recebido_em,formato,resultado").order("recebido_em", { ascending: false }).limit(8))]);
+  const [cfgRows, seg, eventos, codigos, anuncios, leadsCod] = await Promise.all([q(sb.from("config").select("*")), q(sb.rpc("crm_segredos_definidos")), q(sb.from("webhook_eventos").select("id,recebido_em,formato,resultado").order("recebido_em", { ascending: false }).limit(8)),
+    q(sb.from("anuncio_codigos").select("*").order("codigo")), q(sb.from("meta_anuncios").select("*").eq("demo", false).order("campaign_nome").order("adset_nome").order("ad_nome")),
+    q(sb.from("leads").select("codigo_origem,meta_ad_id").gte("codigo_origem", "").limit(5000))]);
   perfis = await q(sb.from("perfis").select("*").order("nome"));
   const cfg = Object.fromEntries(cfgRows.map((r) => [r.chave, r.valor]));
   const base = sb.supabaseUrl || CFG.url;
   const hook = `${base}/functions/v1/whatsapp-webhook?token=${cfg.webhook_token || ""}`;
   const temDemo = perfis.some((p) => p.demo);
+  // códigos de anúncio: leads por código e códigos que chegaram sem cadastro
+  const porCodigo = {};
+  for (const l of leadsCod) if (l.codigo_origem) porCodigo[l.codigo_origem] = (porCodigo[l.codigo_origem] || 0) + 1;
+  const pendentes = Object.keys(porCodigo).filter((c) => !codigos.some((x) => x.codigo === c)).sort();
+  const nomeAd = (id) => { const a = anuncios.find((x) => x.ad_id === id); return a ? `${a.campaign_nome} › ${a.adset_nome} › ${a.ad_nome}` : `Anúncio ${id}`; };
+  let numProx = 1;
+  while (codigos.some((x) => x.codigo === "MS" + String(numProx).padStart(2, "0"))) numProx++;
+  const proximo = "MS" + String(numProx).padStart(2, "0");
+  const grupos = {};
+  for (const a of anuncios) { const c = a.campaign_nome || "Sem campanha"; if (!grupos[c]) grupos[c] = []; grupos[c].push(a); }
   $("#main").innerHTML = `
   <div class="head"><div><h1>Configurações</h1><div class="sub">Equipe, integrações com WhatsApp e Meta Ads.</div></div></div>
 
@@ -771,6 +784,19 @@ async function vConfig() {
     <div class="field"><label>Versão da API</label><input id="mt_ver" value="${esc(cfg.meta_api_version || "v23.0")}"></div></div>
     <div class="sub" style="margin-bottom:10px">Última sincronização: <b>${cfg.meta_ultimo_sync ? dataHora(cfg.meta_ultimo_sync) : "nunca"}</b>${cfg.meta_ultimo_erro ? ` · <span style="color:var(--crit)">Erro: ${esc(cfg.meta_ultimo_erro)}</span>` : ""}</div>
     <button class="btn pri" id="mt_salvar">Salvar</button> <button class="btn" id="mt_sync">Sincronizar agora (14 dias)</button> <button class="btn" id="mt_sync90">Importar 90 dias</button></div>
+
+  <div class="card"><h2>Códigos de anúncio</h2>
+    <div class="sub" style="margin-bottom:10px">Coloque um código curto na mensagem pronta de cada anúncio (ex.: “Olá! Quero um orçamento <b>${proximo}</b>”). O BotConversa envia o código e o CRM liga o lead ao anúncio certo. Leads que chegarem com um código ainda não cadastrado são ligados assim que você cadastrar.</div>
+    ${anuncios.length ? `<div class="row" style="align-items:flex-end">
+      <div class="field" style="flex:0 0 130px;min-width:110px"><label>Código</label><input id="cd_cod" value="${proximo}" maxlength="20" autocomplete="off"></div>
+      <div class="field" style="flex:5"><label>Anúncio</label><select id="cd_ad">${Object.entries(grupos).map(([c, ads]) => `<optgroup label="${esc(c)}">${ads.map((a) => `<option value="${esc(a.ad_id)}">${esc(a.adset_nome)} › ${esc(a.ad_nome)}</option>`).join("")}</optgroup>`).join("")}</select></div>
+      <div class="field" style="flex:0 0 120px;min-width:110px"><button class="btn pri" id="cd_add" style="width:100%">Adicionar</button></div></div>`
+    : `<div class="note">Sincronize o Meta Ads (acima) para escolher os anúncios.</div>`}
+    ${pendentes.length ? `<div class="note">Códigos recebidos que ainda não foram cadastrados: ${pendentes.map((c) => `<a href="#" data-pend="${esc(c)}"><b>${esc(c)}</b></a> (${porCodigo[c]} lead${porCodigo[c] > 1 ? "s" : ""})`).join(" · ")}. Clique para cadastrar.</div>` : ""}
+    <div class="tw"><table><tr><th>Código</th><th>Campanha › Conjunto › Anúncio</th><th class="num">Leads</th><th>Ativo</th><th></th></tr>
+    ${codigos.map((c) => `<tr><td><b>${esc(c.codigo)}</b></td><td>${esc(nomeAd(c.meta_ad_id))}</td><td class="num">${int(porCodigo[c.codigo] || 0)}</td>
+      <td><input type="checkbox" data-cdativo="${esc(c.codigo)}" ${c.ativo ? "checked" : ""} aria-label="Ativo"></td><td class="num"><button class="btn sm danger" data-cddel="${esc(c.codigo)}">Excluir</button></td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nenhum código cadastrado.</td></tr>`}
+    </table></div></div>
 
   <div class="card"><h2>Dados de demonstração</h2><div class="sub" style="margin-bottom:10px">Gera leads, vendas e campanhas fictícios para você conhecer os relatórios. Ficam separados dos dados reais e podem ser removidos a qualquer momento.</div>
     <button class="btn" id="demo_on">${temDemo ? "Gerar novamente" : "Carregar dados de demonstração"}</button> ${temDemo ? `<button class="btn danger" id="demo_off">Remover dados de demonstração</button>` : ""}</div>`;
@@ -801,6 +827,15 @@ async function vConfig() {
   $("#mt_salvar").onclick = async () => { try { await salvarMeta(); toast("Integração salva"); re(); } catch (e) { falha(e); } };
   const sync = async (dias, b) => { b.disabled = true; try { await salvarMeta(); const r = await fn("meta-sync", { dias }); toast(`Sincronizado: ${r.anuncios} anúncios, ${r.linhas} linhas`); } catch (e) { falha(e); } re(); };
   $("#mt_sync").onclick = (e) => sync(14, e.target); $("#mt_sync90").onclick = (e) => sync(90, e.target);
+  if ($("#cd_add")) $("#cd_add").onclick = async () => {
+    const codigo = $("#cd_cod").value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!/^[A-Z0-9]{2,20}$/.test(codigo)) return toast("Use de 2 a 20 letras e números, sem espaços (ex.: MS01).", true);
+    try { await q(sb.from("anuncio_codigos").insert({ codigo, meta_ad_id: $("#cd_ad").value })); toast(`Código ${codigo} cadastrado`); re(); }
+    catch (e) { falha(e.code === "23505" ? new Error(`O código ${codigo} já existe.`) : e); }
+  };
+  $$("[data-pend]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); if ($("#cd_cod")) { $("#cd_cod").value = a.dataset.pend; $("#cd_ad").focus(); } }));
+  $$("[data-cdativo]").forEach((i) => (i.onchange = async () => { try { await q(sb.from("anuncio_codigos").update({ ativo: i.checked }).eq("codigo", i.dataset.cdativo)); toast("Salvo"); } catch (e) { falha(e); re(); } }));
+  $$("[data-cddel]").forEach((b) => (b.onclick = () => confirmar(`Excluir o código ${b.dataset.cddel}? Os leads que já chegaram continuam ligados ao anúncio.`, async () => { await q(sb.from("anuncio_codigos").delete().eq("codigo", b.dataset.cddel)); toast("Código excluído"); re(); })));
   $("#demo_on").onclick = async (e) => { e.target.disabled = true; try { const r = await q(sb.rpc("crm_demo_gerar")); toast(`${r.leads} leads de demonstração criados`); } catch (er) { falha(er); } re(); };
   if ($("#demo_off")) $("#demo_off").onclick = () => confirmar("Remover todos os dados de demonstração?", async () => { await q(sb.rpc("crm_demo_limpar")); toast("Dados de demonstração removidos"); re(); });
 }
