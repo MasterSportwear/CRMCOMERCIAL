@@ -200,6 +200,16 @@ const MOTIVOS = ["Preço", "Prazo de entrega", "Parou de responder", "Fechou com
 function toast(msg, err) { const t = $("#toast"); t.textContent = msg; t.className = err ? "err" : ""; t.style.display = "block"; clearTimeout(toast.t); toast.t = setTimeout(() => (t.style.display = "none"), err ? 6000 : 2600); }
 const falha = (e) => { console.error(e); toast(e?.message || String(e), true); };
 async function q(promise) { const { data, error, count } = await promise; if (error) throw error; return count != null ? { data, count } : data; }
+// O servidor devolve no máximo 1.000 linhas por consulta: busca em páginas até trazer tudo
+async function todos(montar, max = 20000) {
+  const saida = [];
+  for (let ini = 0; ini < max; ini += 1000) {
+    const parte = await q(montar().range(ini, ini + 999));
+    saida.push(...parte);
+    if (parte.length < 1000) break;
+  }
+  return saida;
+}
 async function fn(nome, body) {
   const { data, error } = await sb.functions.invoke(nome, { body });
   if (error) { let m = error.message; try { const j = await error.context.json(); m = j.erro || m; } catch (_) {} throw new Error(m); }
@@ -743,9 +753,9 @@ function abrirPerda(l) {
 /* ====================== CONFIGURAÇÕES ====================== */
 async function vConfig() {
   const [cfgRows, seg, eventos, codigos, anuncios, leadsCod, recentes] = await Promise.all([q(sb.from("config").select("*")), q(sb.rpc("crm_segredos_definidos")), q(sb.from("webhook_eventos").select("id,recebido_em,formato,resultado").order("recebido_em", { ascending: false }).limit(8)),
-    q(sb.from("anuncio_codigos").select("*").order("codigo")), q(sb.from("meta_anuncios").select("*").eq("demo", false).order("campaign_nome").order("adset_nome").order("ad_nome")),
-    q(sb.from("leads").select("codigo_origem,meta_ad_id").gte("codigo_origem", "").limit(5000)),
-    q(sb.from("meta_insights").select("ad_id,gasto").gte("data", addDias(hojeBR(), -3)).limit(5000))]);
+    q(sb.from("anuncio_codigos").select("*").order("codigo")), todos(() => sb.from("meta_anuncios").select("ad_id,ad_nome,adset_id,adset_nome,campaign_id,campaign_nome").eq("demo", false).order("ad_id", { ascending: false })),
+    todos(() => sb.from("leads").select("codigo_origem,meta_ad_id").gte("codigo_origem", "").order("codigo_origem")),
+    todos(() => sb.from("meta_insights").select("ad_id,gasto").gte("data", addDias(hojeBR(), -3)).order("ad_id"))]);
   perfis = await q(sb.from("perfis").select("*").order("nome"));
   const cfg = Object.fromEntries(cfgRows.map((r) => [r.chave, r.valor]));
   const base = sb.supabaseUrl || CFG.url;
