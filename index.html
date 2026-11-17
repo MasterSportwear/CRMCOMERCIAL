@@ -539,22 +539,32 @@ async function vFunil() {
   let g = sb.from("leads").select("*").eq("status", "ganho").gte("atualizado_em", new Date(Date.now() - 30 * 864e5).toISOString()).order("atualizado_em", { ascending: false }).limit(60);
   if (st.vendedora) { c = c.eq("vendedora_id", st.vendedora); g = g.eq("vendedora_id", st.vendedora); }
   const [abertos, ganhos] = await Promise.all([q(c), q(g)]);
-  const leads = [...abertos, ...ganhos], agora = Date.now();
+  let leads = [...abertos, ...ganhos];
+  const agora = Date.now();
+  if (!gestor() && st.funilVer === "meus") leads = leads.filter((l) => l.vendedora_id === eu.id);
+  if (!gestor() && st.funilVer === "livres") leads = leads.filter((l) => !l.vendedora_id);
+  const livres = [...abertos, ...ganhos].filter((l) => !l.vendedora_id && l.status === "aberto").length;
   const cartao = (l) => {
     const dias = Math.max(0, Math.floor((agora - new Date(l.etapa_desde)) / 864e5));
     return `<div class="lead" draggable="true" data-id="${l.id}">
       <div class="n">${esc(l.nome || fone(l.telefone) || "Sem nome")}</div>
       <div class="m">${l.modalidade ? `<span>${esc(l.modalidade)}</span>` : ""}${l.quantidade_pecas ? `<span>${int(l.quantidade_pecas)} pç</span>` : ""}${l.valor_estimado ? `<span>${brl(l.valor_estimado)}</span>` : ""}</div>
-      <div class="m">${l.meta_ad_id ? `<span class="badge ad">Anúncio</span>` : ""}${l.status === "ganho" ? `<span class="badge won">Venda</span>` : ""}${semAtendimento(l)}${retornoBadge(l)}${l.retornos_qtd ? `<span class="badge" data-tip="Último retorno: ${dataHora(l.ultimo_retorno_em)}">↩ ${l.retornos_qtd}</span>` : ""}<span class="muted">${dias ? dias + "d na etapa" : "hoje"}</span>${gestor() ? `<span class="muted">· ${esc(nomeVend(l.vendedora_id).split(" ")[0])}</span>` : ""}</div>
+      <div class="m">${l.meta_ad_id ? `<span class="badge ad">Anúncio</span>` : ""}${l.status === "ganho" ? `<span class="badge won">Venda</span>` : ""}${semAtendimento(l)}${retornoBadge(l)}${l.retornos_qtd ? `<span class="badge" data-tip="Último retorno: ${dataHora(l.ultimo_retorno_em)}">↩ ${l.retornos_qtd}</span>` : ""}<span class="muted">${dias ? dias + "d na etapa" : "hoje"}</span>${gestor() && l.vendedora_id ? `<span class="muted">· ${esc(nomeVend(l.vendedora_id).split(" ")[0])}</span>` : ""}</div>
+      ${!l.vendedora_id ? `<div class="m"><span class="badge wait" data-tip="Ninguém assumiu este cliente ainda">Livre</span>${!gestor() && l.status === "aberto" ? `<button class="btn sm pri" data-assumir="${l.id}">Assumir</button>` : ""}</div>` : ""}
     </div>`;
   };
   $("#main").innerHTML = `
   <div class="head"><div><h1>Funil de vendas</h1><div class="sub">Arraste o lead para a etapa em que ele está. Soltar em Fechamento registra a venda.</div></div>
-    <div class="row" style="flex:none">${gestor() ? `<select id="kv" style="flex:none"><option value="">Todas as vendedoras</option>${perfis.filter((x) => x.ativo).map((x) => `<option value="${x.id}" ${st.vendedora === x.id ? "selected" : ""}>${esc(x.nome)}</option>`).join("")}</select>` : ""}
+    <div class="row" style="flex:none">${!gestor() ? `<select id="kf" style="flex:none" aria-label="Quais clientes mostrar"><option value="">Meus e livres (${livres} livres)</option><option value="meus" ${st.funilVer === "meus" ? "selected" : ""}>Só os meus</option><option value="livres" ${st.funilVer === "livres" ? "selected" : ""}>Só os livres</option></select>` : ""}${gestor() ? `<select id="kv" style="flex:none"><option value="">Todas as vendedoras</option>${perfis.filter((x) => x.ativo).map((x) => `<option value="${x.id}" ${st.vendedora === x.id ? "selected" : ""}>${esc(x.nome)}</option>`).join("")}</select>` : ""}
     <button class="btn pri" id="novo" style="flex:none">+ Novo lead</button></div></div>
   <div class="kanban">${etapas.map((e) => { const ls = leads.filter((l) => l.etapa_id === e.id);
     return `<div class="col ${e.tipo === "recuperacao" ? "rec" : ""}" data-etapa="${e.id}"><h3><span>${esc(e.nome)}</span><span>${ls.length}</span></h3><div class="list">${ls.map(cartao).join("")}</div></div>`; }).join("")}</div>`;
   if ($("#kv")) $("#kv").onchange = (e) => { st.vendedora = e.target.value; vFunil().catch(falha); };
+  if ($("#kf")) { if (st.funilVer) $("#kf").value = st.funilVer; $("#kf").onchange = (e) => { st.funilVer = e.target.value; vFunil().catch(falha); }; }
+  $$("[data-assumir]").forEach((b) => (b.onclick = async (ev) => {
+    ev.stopPropagation(); b.disabled = true;
+    try { await assumirLead(b.dataset.assumir); } catch (e) { falha(e); vFunil().catch(falha); }
+  }));
   $("#novo").onclick = () => abrirLead(null);
   $$(".lead").forEach((el) => {
     el.onclick = () => abrirLead(el.dataset.id);
@@ -570,6 +580,12 @@ async function vFunil() {
       try { await moverLead(l, para); } catch (e) { falha(e); }
     };
   });
+}
+// A vendedora assume um lead livre (se outra já assumiu, o banco avisa quem)
+async function assumirLead(id) {
+  await q(sb.rpc("crm_assumir_lead", { p_lead: id }));
+  toast("Lead assumido: agora ele é seu");
+  rota();
 }
 async function moverLead(l, para) {
   if (para === 7) return abrirVenda(l);
@@ -658,7 +674,7 @@ async function abrirLead(id, aba) {
     <div class="row"><div class="field"><label>Nome</label><input id="m_nome" value="${esc(l.nome)}"></div>
       <div class="field"><label>WhatsApp (com DDD)</label><input id="m_tel" value="${esc(l.telefone)}" inputmode="tel"></div></div>
     <div class="row"><div class="field"><label>Etapa</label>${sel("m_etapa", etapas.filter((e) => e.id !== 7 || l.status === "ganho").map((e) => [e.id, e.nome]), l.etapa_id)}</div>
-      <div class="field"><label>Vendedora</label>${gestor() ? sel("m_vend", [["", "Sem vendedora"], ...perfis.filter((p) => p.ativo || p.id === l.vendedora_id).map((p) => [p.id, p.nome])], l.vendedora_id) : `<input disabled value="${esc(nomeVend(l.vendedora_id))}">`}</div>
+      <div class="field"><label>Vendedora</label>${gestor() ? sel("m_vend", [["", "Livre (sem vendedora)"], ...perfis.filter((p) => p.ativo || p.id === l.vendedora_id).map((p) => [p.id, p.nome])], l.vendedora_id) : !novo && !l.vendedora_id ? `<button class="btn pri" id="m_assumir" style="width:100%">Assumir este lead</button>` : `<input disabled value="${esc(novo ? eu.nome : nomeVend(l.vendedora_id))}">`}</div>
       <div class="field"><label>Origem</label>${sel("m_origem", Object.entries(ORIGENS), l.origem)}</div></div>
     <div class="row"><div class="field"><label>Modalidade / esporte</label><input id="m_mod" value="${esc(l.modalidade)}"></div>
       <div class="field"><label>Quantidade de peças</label><input id="m_qtd" type="number" min="0" value="${esc(l.quantidade_pecas)}"></div>
@@ -708,6 +724,7 @@ async function abrirLead(id, aba) {
       } catch (e) { falha(e.code === "23505" ? new Error("Já existe um lead com este telefone.") : e); }
     };
     if ($("#m_venda")) $("#m_venda").onclick = () => abrirVenda(l);
+    if ($("#m_assumir")) $("#m_assumir").onclick = async () => { try { await assumirLead(id); abrirLead(id); } catch (e) { falha(e); } };
     if ($("#m_perd")) $("#m_perd").onclick = () => abrirPerda(l);
     if ($("#m_reab")) $("#m_reab").onclick = async () => { try { await q(sb.from("leads").update({ etapa_id: 8 }).eq("id", id)); fechar(); toast("Lead reaberto em Reativação"); rota(); } catch (e) { falha(e); } };
     if ($("#m_del")) $("#m_del").onclick = () => confirmar("Excluir este lead e todo o histórico dele?", async () => { await q(sb.from("leads").delete().eq("id", id)); toast("Lead excluído"); rota(); });
@@ -810,11 +827,9 @@ async function vConfig() {
   $("#main").innerHTML = `
   <div class="head"><div><h1>Configurações</h1><div class="sub">Equipe, integrações com WhatsApp e Meta Ads.</div></div></div>
 
-  <div class="card"><div class="head" style="margin-bottom:8px"><div><h2>Equipe</h2><div class="sub">Quem acessa o CRM e quem entra no rodízio de novos leads.</div></div><button class="btn pri" id="eq_novo">+ Novo usuário</button></div>
-    <div class="tw"><table><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th data-tip="Número, phone_number_id ou nome da instância de WhatsApp que esta vendedora atende. Mensagens recebidas nesse canal vão direto para ela.">Canal WhatsApp</th><th>Recebe leads</th><th>Ativo</th><th></th></tr>
+  <div class="card"><div class="head" style="margin-bottom:8px"><div><h2>Equipe</h2><div class="sub">Quem acessa o CRM. Os leads chegam livres e cada vendedora assume os seus.</div></div><button class="btn pri" id="eq_novo">+ Novo usuário</button></div>
+    <div class="tw"><table><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Ativo</th><th></th></tr>
     ${perfis.map((p) => `<tr><td><b>${esc(p.nome)}</b></td><td>${esc(p.email || "—")}</td><td>${p.papel === "gestor" ? "Gestor" : "Vendedora"}</td>
-      <td>${p.demo ? "—" : `<input data-canal="${p.id}" value="${esc(p.canal_whatsapp)}" placeholder="opcional" style="width:150px">`}</td>
-      <td>${p.demo || p.papel !== "vendedora" ? "—" : `<input type="checkbox" data-recebe="${p.id}" ${p.recebe_leads ? "checked" : ""} aria-label="Recebe leads">`}</td>
       <td>${p.demo ? "demo" : `<input type="checkbox" data-ativo="${p.id}" ${p.ativo ? "checked" : ""} ${p.id === eu.id ? "disabled" : ""} aria-label="Ativo">`}</td>
       <td class="num">${p.demo ? "" : `<button class="btn sm" data-senha="${p.id}">Nova senha</button> ${p.id !== eu.id ? `<button class="btn sm danger" data-rem="${p.id}">Remover</button>` : ""}`}</td></tr>`).join("")}
     </table></div></div>
@@ -854,7 +869,6 @@ async function vConfig() {
   const re = () => vConfig().catch(falha);
   const upd = async (id, d) => { try { await q(sb.from("perfis").update(d).eq("id", id)); toast("Salvo"); } catch (e) { falha(e); re(); } };
   $$("[data-canal]").forEach((i) => (i.onchange = () => upd(i.dataset.canal, { canal_whatsapp: i.value.trim() || null })));
-  $$("[data-recebe]").forEach((i) => (i.onchange = () => upd(i.dataset.recebe, { recebe_leads: i.checked })));
   $$("[data-ativo]").forEach((i) => (i.onchange = () => upd(i.dataset.ativo, { ativo: i.checked })));
   $$("[data-rem]").forEach((b) => (b.onclick = () => confirmar("Remover este usuário? Os leads dele ficam sem vendedora.", async () => { await fn("equipe", { acao: "remover", id: b.dataset.rem }); toast("Usuário removido"); re(); })));
   $$("[data-senha]").forEach((b) => (b.onclick = () => {
