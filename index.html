@@ -770,6 +770,33 @@ async function vConfig() {
   const opcoes = (sel) => ordemGrupos.map((c) => `<optgroup label="${esc(c)}">${grupos[c].map((a) => `<option value="${esc(a.ad_id)}" ${a.ad_id === sel ? "selected" : ""}>${esc(a.adset_nome)} › ${esc(a.ad_nome)}</option>`).join("")}</optgroup>`).join("")
     + (sel && !anuncios.some((a) => a.ad_id === sel) ? `<option value="${esc(sel)}" selected>Anúncio ${esc(sel)}</option>` : "");
   const parados = codigos.filter((c) => c.ativo && !ativos.has(c.meta_ad_id)).length;
+  // IDs de anúncio da Meta crescem com o tempo: o maior ID da campanha indica a campanha mais recente
+  const maisNovo = (x, y) => (x.length - y.length) || (x < y ? -1 : x > y ? 1 : 0);
+  const recCamp = {};
+  for (const a of anuncios) { const k = a.campaign_id || a.campaign_nome; if (!recCamp[k] || maisNovo(a.ad_id, recCamp[k]) > 0) recCamp[k] = a.ad_id; }
+  const listaBusca = anuncios.slice().sort((a, b) => maisNovo(recCamp[b.campaign_id || b.campaign_nome], recCamp[a.campaign_id || a.campaign_nome])
+    || String(a.campaign_nome).localeCompare(String(b.campaign_nome), "pt-BR") || String(a.adset_nome).localeCompare(String(b.adset_nome), "pt-BR")
+    || String(a.ad_nome).localeCompare(String(b.ad_nome), "pt-BR"));
+  const semAcento = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const escolherAnuncio = (titulo, atual, aoEscolher) => {
+    modal(`<div class="mh"><div><h1>${esc(titulo)}</h1><div class="sub">Busque pelo nome da campanha, do conjunto ou do anúncio. As campanhas mais recentes aparecem primeiro.</div></div><button class="x" data-fechar aria-label="Fechar">×</button></div>
+      <input id="pk_q" placeholder="Ex.: ENVOLVIMENTO 7 e 15D, AD03, regatas…" style="width:100%" autocomplete="off" aria-label="Buscar anúncio">
+      <div id="pk_info" class="sub" style="margin:8px 0"></div><div id="pk_lista" style="max-height:55vh;overflow-y:auto"></div>`);
+    const desenhar = () => {
+      const termos = semAcento($("#pk_q").value).split(/\s+/).filter(Boolean);
+      const achados = listaBusca.filter((a) => { const t = semAcento(`${a.campaign_nome} ${a.adset_nome} ${a.ad_nome} ${a.ad_id}`); return termos.every((x) => t.includes(x)); });
+      const mostra = achados.slice(0, 150);
+      $("#pk_info").textContent = achados.length > mostra.length ? `Mostrando ${mostra.length} de ${achados.length} anúncios. Digite mais para refinar.` : `${achados.length} anúncio${achados.length === 1 ? "" : "s"}.`;
+      let html = "", ultima = null;
+      for (const a of mostra) {
+        if (a.campaign_nome !== ultima) { html += `<div style="font-size:12px;font-weight:700;color:var(--ink2);margin:12px 0 4px">${esc(a.campaign_nome || "Sem campanha")}</div>`; ultima = a.campaign_nome; }
+        html += `<button class="btn" data-pk="${esc(a.ad_id)}" style="display:flex;width:100%;justify-content:space-between;gap:8px;text-align:left;margin:3px 0;${a.ad_id === atual ? "border-color:var(--accent);background:var(--accent-soft)" : ""}"><span>${esc(a.adset_nome)} › <b>${esc(a.ad_nome)}</b></span>${ativos.has(a.ad_id) ? `<span class="badge won">em veiculação</span>` : ""}</button>`;
+      }
+      $("#pk_lista").innerHTML = html || `<div class="empty">Nenhum anúncio encontrado. Se a campanha é nova, clique em “Sincronizar agora” no quadro Meta Ads.</div>`;
+      $$("[data-pk]").forEach((b) => (b.onclick = () => { fechar(); aoEscolher(b.dataset.pk); }));
+    };
+    $("#pk_q").oninput = desenhar; desenhar(); $("#pk_q").focus();
+  };
   $("#main").innerHTML = `
   <div class="head"><div><h1>Configurações</h1><div class="sub">Equipe, integrações com WhatsApp e Meta Ads.</div></div></div>
 
@@ -801,12 +828,12 @@ async function vConfig() {
     ${parados && Object.keys(grupos).some((g) => g.startsWith("Em")) ? `<div class="note">${parados} código${parados > 1 ? "s apontam" : " aponta"} para anúncio${parados > 1 ? "s" : ""} sem investimento nos últimos 3 dias (marcados como <b>parado</b>). Se começou um ciclo novo, troque o anúncio deles.</div>` : ""}
     ${anuncios.length ? `<div class="row" style="align-items:flex-end">
       <div class="field" style="flex:0 0 130px;min-width:110px"><label>Código</label><input id="cd_cod" value="${proximo}" maxlength="20" autocomplete="off"></div>
-      <div class="field" style="flex:5"><label>Anúncio</label><select id="cd_ad">${opcoes(null)}</select></div>
+      <div class="field" style="flex:5"><label>Anúncio</label><input type="hidden" id="cd_ad"><button class="btn" id="cd_pick" style="width:100%;text-align:left">🔍 Buscar campanha, conjunto ou anúncio…</button></div>
       <div class="field" style="flex:0 0 120px;min-width:110px"><button class="btn pri" id="cd_add" style="width:100%">Adicionar</button></div></div>`
     : `<div class="note">Sincronize o Meta Ads (acima) para escolher os anúncios.</div>`}
     ${pendentes.length ? `<div class="note">Códigos recebidos que ainda não foram cadastrados: ${pendentes.map((c) => `<a href="#" data-pend="${esc(c)}"><b>${esc(c)}</b></a> (${porCodigo[c]} lead${porCodigo[c] > 1 ? "s" : ""})`).join(" · ")}. Clique para cadastrar.</div>` : ""}
     <div class="tw"><table><tr><th>Código</th><th>Campanha › Conjunto › Anúncio</th><th class="num" data-tip="Leads que chegaram com este código, somando todos os ciclos">Leads (total)</th><th>Ativo</th><th></th></tr>
-    ${codigos.map((c) => `<tr><td><b>${esc(c.codigo)}</b></td><td><select data-cdad="${esc(c.codigo)}" aria-label="Anúncio do código ${esc(c.codigo)}" style="max-width:100%;min-width:260px">${opcoes(c.meta_ad_id)}</select>
+    ${codigos.map((c) => `<tr><td><b>${esc(c.codigo)}</b></td><td><button class="btn sm" data-cdad="${esc(c.codigo)}" data-atual="${esc(c.meta_ad_id)}">🔍 Trocar anúncio</button>
       ${c.ativo && !ativos.has(c.meta_ad_id) && Object.keys(grupos).some((g) => g.startsWith("Em")) ? ` <span class="badge wait" data-tip="Sem investimento nos últimos 3 dias">parado</span>` : ""}<div class="sub">${esc(nomeAd(c.meta_ad_id))}</div></td><td class="num">${int(porCodigo[c.codigo] || 0)}</td>
       <td><input type="checkbox" data-cdativo="${esc(c.codigo)}" ${c.ativo ? "checked" : ""} aria-label="Ativo"></td><td class="num"><button class="btn sm danger" data-cddel="${esc(c.codigo)}">Excluir</button></td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nenhum código cadastrado.</td></tr>`}
     </table></div></div>
@@ -843,14 +870,19 @@ async function vConfig() {
   if ($("#cd_add")) $("#cd_add").onclick = async () => {
     const codigo = $("#cd_cod").value.toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (!/^[A-Z0-9]{2,20}$/.test(codigo)) return toast("Use de 2 a 20 letras e números, sem espaços (ex.: MS01).", true);
+    if (!$("#cd_ad").value) return toast("Escolha o anúncio pela busca.", true);
     try { await q(sb.from("anuncio_codigos").insert({ codigo, meta_ad_id: $("#cd_ad").value })); toast(`Código ${codigo} cadastrado`); re(); }
     catch (e) { falha(e.code === "23505" ? new Error(`O código ${codigo} já existe.`) : e); }
   };
-  $$("[data-pend]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); if ($("#cd_cod")) { $("#cd_cod").value = a.dataset.pend; $("#cd_ad").focus(); } }));
-  $$("[data-cdad]").forEach((sel) => (sel.onchange = async () => {
-    try { await q(sb.from("anuncio_codigos").update({ meta_ad_id: sel.value }).eq("codigo", sel.dataset.cdad)); toast(`${sel.dataset.cdad} agora aponta para ${nomeAd(sel.value)}`); re(); }
+  $$("[data-pend]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); if ($("#cd_cod")) { $("#cd_cod").value = a.dataset.pend; $("#cd_pick").click(); } }));
+  if ($("#cd_pick")) $("#cd_pick").onclick = () => {
+    const cod = $("#cd_cod").value.toUpperCase().replace(/[^A-Z0-9]/g, "") || "o código";
+    escolherAnuncio(`Anúncio para ${cod}`, $("#cd_ad").value, (id) => { $("#cd_ad").value = id; $("#cd_pick").textContent = nomeAd(id); });
+  };
+  $$("[data-cdad]").forEach((bt) => (bt.onclick = () => escolherAnuncio(`Novo anúncio para ${bt.dataset.cdad}`, bt.dataset.atual, async (id) => {
+    try { await q(sb.from("anuncio_codigos").update({ meta_ad_id: id }).eq("codigo", bt.dataset.cdad)); toast(`${bt.dataset.cdad} agora aponta para ${nomeAd(id)}`); re(); }
     catch (e) { falha(e); re(); }
-  }));
+  })));
   $$("[data-cdativo]").forEach((i) => (i.onchange = async () => { try { await q(sb.from("anuncio_codigos").update({ ativo: i.checked }).eq("codigo", i.dataset.cdativo)); toast("Salvo"); } catch (e) { falha(e); re(); } }));
   $$("[data-cddel]").forEach((b) => (b.onclick = () => confirmar(`Excluir o código ${b.dataset.cddel}? Os leads que já chegaram continuam ligados ao anúncio.`, async () => { await q(sb.from("anuncio_codigos").delete().eq("codigo", b.dataset.cddel)); toast("Código excluído"); re(); })));
   $("#demo_on").onclick = async (e) => { e.target.disabled = true; try { const r = await q(sb.rpc("crm_demo_gerar")); toast(`${r.leads} leads de demonstração criados`); } catch (er) { falha(er); } re(); };
