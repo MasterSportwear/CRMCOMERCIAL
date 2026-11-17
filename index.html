@@ -742,9 +742,10 @@ function abrirPerda(l) {
 
 /* ====================== CONFIGURAÇÕES ====================== */
 async function vConfig() {
-  const [cfgRows, seg, eventos, codigos, anuncios, leadsCod] = await Promise.all([q(sb.from("config").select("*")), q(sb.rpc("crm_segredos_definidos")), q(sb.from("webhook_eventos").select("id,recebido_em,formato,resultado").order("recebido_em", { ascending: false }).limit(8)),
+  const [cfgRows, seg, eventos, codigos, anuncios, leadsCod, recentes] = await Promise.all([q(sb.from("config").select("*")), q(sb.rpc("crm_segredos_definidos")), q(sb.from("webhook_eventos").select("id,recebido_em,formato,resultado").order("recebido_em", { ascending: false }).limit(8)),
     q(sb.from("anuncio_codigos").select("*").order("codigo")), q(sb.from("meta_anuncios").select("*").eq("demo", false).order("campaign_nome").order("adset_nome").order("ad_nome")),
-    q(sb.from("leads").select("codigo_origem,meta_ad_id").gte("codigo_origem", "").limit(5000))]);
+    q(sb.from("leads").select("codigo_origem,meta_ad_id").gte("codigo_origem", "").limit(5000)),
+    q(sb.from("meta_insights").select("ad_id,gasto").gte("data", addDias(hojeBR(), -3)).limit(5000))]);
   perfis = await q(sb.from("perfis").select("*").order("nome"));
   const cfg = Object.fromEntries(cfgRows.map((r) => [r.chave, r.valor]));
   const base = sb.supabaseUrl || CFG.url;
@@ -758,8 +759,17 @@ async function vConfig() {
   let numProx = 1;
   while (codigos.some((x) => x.codigo === "MS" + String(numProx).padStart(2, "0"))) numProx++;
   const proximo = "MS" + String(numProx).padStart(2, "0");
+  const ativos = new Set(recentes.filter((r) => Number(r.gasto) > 0).map((r) => r.ad_id));
   const grupos = {};
-  for (const a of anuncios) { const c = a.campaign_nome || "Sem campanha"; if (!grupos[c]) grupos[c] = []; grupos[c].push(a); }
+  for (const a of anuncios) {
+    const c = (ativos.has(a.ad_id) ? "Em veiculação · " : "Parados · ") + (a.campaign_nome || "Sem campanha");
+    if (!grupos[c]) grupos[c] = [];
+    grupos[c].push(a);
+  }
+  const ordemGrupos = Object.keys(grupos).sort((x, y) => (y.startsWith("Em") - x.startsWith("Em")) || x.localeCompare(y, "pt-BR"));
+  const opcoes = (sel) => ordemGrupos.map((c) => `<optgroup label="${esc(c)}">${grupos[c].map((a) => `<option value="${esc(a.ad_id)}" ${a.ad_id === sel ? "selected" : ""}>${esc(a.adset_nome)} › ${esc(a.ad_nome)}</option>`).join("")}</optgroup>`).join("")
+    + (sel && !anuncios.some((a) => a.ad_id === sel) ? `<option value="${esc(sel)}" selected>Anúncio ${esc(sel)}</option>` : "");
+  const parados = codigos.filter((c) => c.ativo && !ativos.has(c.meta_ad_id)).length;
   $("#main").innerHTML = `
   <div class="head"><div><h1>Configurações</h1><div class="sub">Equipe, integrações com WhatsApp e Meta Ads.</div></div></div>
 
@@ -786,15 +796,18 @@ async function vConfig() {
     <button class="btn pri" id="mt_salvar">Salvar</button> <button class="btn" id="mt_sync">Sincronizar agora (14 dias)</button> <button class="btn" id="mt_sync90">Importar 90 dias</button></div>
 
   <div class="card"><h2>Códigos de anúncio</h2>
-    <div class="sub" style="margin-bottom:10px">Coloque um código curto na mensagem pronta de cada anúncio (ex.: “Olá! Quero um orçamento <b>${proximo}</b>”). O BotConversa envia o código e o CRM liga o lead ao anúncio certo. Leads que chegarem com um código ainda não cadastrado são ligados assim que você cadastrar.</div>
+    <div class="sub" style="margin-bottom:10px">Coloque um código curto na mensagem pronta de cada anúncio (ex.: “Olá! Quero um orçamento <b>${proximo}</b>”). O BotConversa envia o código e o CRM liga o lead ao anúncio certo. Leads que chegarem com um código ainda não cadastrado são ligados assim que você cadastrar.<br>
+    <b>Novo ciclo de campanhas:</b> desligue os anúncios antigos e troque, na tabela, o anúncio de cada código. Os leads que já chegaram continuam no anúncio antigo.</div>
+    ${parados && Object.keys(grupos).some((g) => g.startsWith("Em")) ? `<div class="note">${parados} código${parados > 1 ? "s apontam" : " aponta"} para anúncio${parados > 1 ? "s" : ""} sem investimento nos últimos 3 dias (marcados como <b>parado</b>). Se começou um ciclo novo, troque o anúncio deles.</div>` : ""}
     ${anuncios.length ? `<div class="row" style="align-items:flex-end">
       <div class="field" style="flex:0 0 130px;min-width:110px"><label>Código</label><input id="cd_cod" value="${proximo}" maxlength="20" autocomplete="off"></div>
-      <div class="field" style="flex:5"><label>Anúncio</label><select id="cd_ad">${Object.entries(grupos).map(([c, ads]) => `<optgroup label="${esc(c)}">${ads.map((a) => `<option value="${esc(a.ad_id)}">${esc(a.adset_nome)} › ${esc(a.ad_nome)}</option>`).join("")}</optgroup>`).join("")}</select></div>
+      <div class="field" style="flex:5"><label>Anúncio</label><select id="cd_ad">${opcoes(null)}</select></div>
       <div class="field" style="flex:0 0 120px;min-width:110px"><button class="btn pri" id="cd_add" style="width:100%">Adicionar</button></div></div>`
     : `<div class="note">Sincronize o Meta Ads (acima) para escolher os anúncios.</div>`}
     ${pendentes.length ? `<div class="note">Códigos recebidos que ainda não foram cadastrados: ${pendentes.map((c) => `<a href="#" data-pend="${esc(c)}"><b>${esc(c)}</b></a> (${porCodigo[c]} lead${porCodigo[c] > 1 ? "s" : ""})`).join(" · ")}. Clique para cadastrar.</div>` : ""}
-    <div class="tw"><table><tr><th>Código</th><th>Campanha › Conjunto › Anúncio</th><th class="num">Leads</th><th>Ativo</th><th></th></tr>
-    ${codigos.map((c) => `<tr><td><b>${esc(c.codigo)}</b></td><td>${esc(nomeAd(c.meta_ad_id))}</td><td class="num">${int(porCodigo[c.codigo] || 0)}</td>
+    <div class="tw"><table><tr><th>Código</th><th>Campanha › Conjunto › Anúncio</th><th class="num" data-tip="Leads que chegaram com este código, somando todos os ciclos">Leads (total)</th><th>Ativo</th><th></th></tr>
+    ${codigos.map((c) => `<tr><td><b>${esc(c.codigo)}</b></td><td><select data-cdad="${esc(c.codigo)}" aria-label="Anúncio do código ${esc(c.codigo)}" style="max-width:100%;min-width:260px">${opcoes(c.meta_ad_id)}</select>
+      ${c.ativo && !ativos.has(c.meta_ad_id) && Object.keys(grupos).some((g) => g.startsWith("Em")) ? ` <span class="badge wait" data-tip="Sem investimento nos últimos 3 dias">parado</span>` : ""}<div class="sub">${esc(nomeAd(c.meta_ad_id))}</div></td><td class="num">${int(porCodigo[c.codigo] || 0)}</td>
       <td><input type="checkbox" data-cdativo="${esc(c.codigo)}" ${c.ativo ? "checked" : ""} aria-label="Ativo"></td><td class="num"><button class="btn sm danger" data-cddel="${esc(c.codigo)}">Excluir</button></td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nenhum código cadastrado.</td></tr>`}
     </table></div></div>
 
@@ -834,6 +847,10 @@ async function vConfig() {
     catch (e) { falha(e.code === "23505" ? new Error(`O código ${codigo} já existe.`) : e); }
   };
   $$("[data-pend]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); if ($("#cd_cod")) { $("#cd_cod").value = a.dataset.pend; $("#cd_ad").focus(); } }));
+  $$("[data-cdad]").forEach((sel) => (sel.onchange = async () => {
+    try { await q(sb.from("anuncio_codigos").update({ meta_ad_id: sel.value }).eq("codigo", sel.dataset.cdad)); toast(`${sel.dataset.cdad} agora aponta para ${nomeAd(sel.value)}`); re(); }
+    catch (e) { falha(e); re(); }
+  }));
   $$("[data-cdativo]").forEach((i) => (i.onchange = async () => { try { await q(sb.from("anuncio_codigos").update({ ativo: i.checked }).eq("codigo", i.dataset.cdativo)); toast("Salvo"); } catch (e) { falha(e); re(); } }));
   $$("[data-cddel]").forEach((b) => (b.onclick = () => confirmar(`Excluir o código ${b.dataset.cddel}? Os leads que já chegaram continuam ligados ao anúncio.`, async () => { await q(sb.from("anuncio_codigos").delete().eq("codigo", b.dataset.cddel)); toast("Código excluído"); re(); })));
   $("#demo_on").onclick = async (e) => { e.target.disabled = true; try { const r = await q(sb.rpc("crm_demo_gerar")); toast(`${r.leads} leads de demonstração criados`); } catch (er) { falha(er); } re(); };
